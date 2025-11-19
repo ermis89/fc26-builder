@@ -1,249 +1,167 @@
 import streamlit as st
 import pandas as pd
-import numpy as np
+import math
 
-# -----------------------------------------------------------------------------
-# 1. Η ΜΗΧΑΝΗ ΛΟΓΙΚΗΣ ΤΟΥ FC26 (HARDCORE LOGIC)
-# -----------------------------------------------------------------------------
-class FC26Engine:
-    @staticmethod
-    def calculate_stat_cost(base_val, target_val):
-        """
-        Υπολογίζει το πραγματικό κόστος AP στο FC.
-        Κανόνας (περίπου): 
-        - Stats < 80: Κοστίζουν 1 AP ανά πόντο
-        - Stats 80-89: Κοστίζουν 2 AP ανά πόντο
-        - Stats 90+: Κοστίζουν 3 AP ανά πόντο
-        """
-        if target_val <= base_val: return 0
-        
-        total_cost = 0
-        for v in range(base_val, target_val):
-            if v < 80:
-                total_cost += 1
-            elif v < 90:
-                total_cost += 2
-            else:
-                total_cost += 3 # High tier cost
-        return total_cost
+st.set_page_config(layout="wide", page_title="FC26 Builder Final")
 
-# -----------------------------------------------------------------------------
-# 2. ΠΡΟΗΓΜΕΝΗ ΑΝΑΓΝΩΣΗ ΤΟΥ ΧΑΟΥΣ (PARSER)
-# -----------------------------------------------------------------------------
+# --- 1. LOGIC ENGINE (Κόστος AP) ---
+def calculate_cost(base, current):
+    if current <= base: return 0
+    cost = 0
+    for val in range(base, current):
+        if val < 80: cost += 1
+        elif val < 90: cost += 2
+        else: cost += 3
+    return cost
+
+# --- 2. DATA LOADER (ΣΑΡΩΣΗ ΜΕΧΡΙ ΤΕΛΟΣ) ---
 @st.cache_data
-def load_complex_data():
+def load_data_final():
     try:
-        # Διαβάζουμε τα πάντα ως string για να μην χάσουμε δεδομένα
+        # Διαβάζουμε όλο το αρχείο, ΟΧΙ μόνο τις πρώτες γραμμές
         df = pd.read_csv("FC26 Pro Club Manual Builder - ManualBuilder.csv", header=None, dtype=str).fillna("")
     except:
-        return None, None, None
+        return {}, []
 
-    # --- A. ΕΞΟΡΥΞΗ LEVELS & AP ---
-    # Ψάχνουμε το πινακάκι που έχει τα AP ανά Level
-    levels_db = {}
+    # --- LEVELS ---
+    levels = {}
+    # Ψάχνουμε τη στήλη Level & Total so far
+    c_lvl = -1; c_ap = -1
+    
+    # Σάρωση για headers
     for r in range(len(df)):
-        row_str = " ".join(df.iloc[r].astype(str).values)
-        if "Total so far" in row_str:
-            # Βρήκαμε τον header, ψάχνουμε από κάτω
-            # Πρέπει να βρούμε ποια στήλη είναι το Level και ποια το AP
-            c_lvl = -1
-            c_ap = -1
-            for c in range(len(df.columns)):
-                val = str(df.iloc[r, c]).strip()
-                if val == "Level": c_lvl = c
-                if "Total so far" in val: c_ap = c
-            
-            if c_lvl != -1:
-                # Σαρώνουμε προς τα κάτω
-                for i in range(r+1, len(df)):
-                    try:
-                        l = df.iloc[i, c_lvl]
-                        ap = df.iloc[i, c_ap]
-                        if l.replace('.','').isdigit():
-                            levels_db[int(float(l))] = int(float(ap))
-                    except: continue
+        for c in range(len(df.columns)):
+            val = str(df.iloc[r, c]).strip()
+            if val == "Level": c_lvl = c
+            if "Total so far" in val: c_ap = c
+        if c_lvl != -1 and c_ap != -1:
+            # Βρήκαμε τους headers, διαβάζουμε από κάτω
+            start_r = r + 1
+            for i in range(start_r, len(df)):
+                try:
+                    l_str = str(df.iloc[i, c_lvl])
+                    ap_str = str(df.iloc[i, c_ap])
+                    if l_str.replace('.','').isdigit():
+                        l = int(float(l_str))
+                        ap = int(float(ap_str))
+                        levels[l] = ap
+                except: continue
             break
     
-    # Fallback αν δεν βρεθεί
-    if not levels_db: levels_db = {100: 1269}
+    # ΔΙΟΡΘΩΣΗ ΓΙΑ MAX LEVEL 60
+    # Αν το CSV σταματάει στο 50, συμπληρώνουμε εμείς
+    max_l_found = max(levels.keys()) if levels else 0
+    if max_l_found < 60:
+        last_ap = levels.get(max_l_found, 0)
+        for x in range(max_l_found + 1, 61):
+            last_ap += 25 # Υπόθεση: +25 AP ανά level μετά το 50 (Adjustable)
+            levels[x] = last_ap
+    
+    # Manual Override για το Level 60 που ζήτησες
+    levels[60] = 1569
 
-    # --- B. ΕΞΟΡΥΞΗ ATTRIBUTES (MIN/MAX) ---
-    # Ψάχνουμε τη λέξη "Acceleration" που είναι πάντα η αρχή
-    attrs_db = []
-    found_attrs = False
+    # --- ATTRIBUTES (Η ΜΕΓΑΛΗ ΔΙΟΡΘΩΣΗ) ---
+    attributes = []
+    c_name = -1
+    
+    # Βρίσκουμε τη στήλη "Acceleration" (Άγκυρα)
     for r in range(len(df)):
         for c in range(len(df.columns)):
             if str(df.iloc[r, c]).strip() == "Acceleration":
-                # Βρήκαμε την αρχή. Υποθέτουμε ότι Min/Max είναι δεξιά
                 c_name = c
-                # Ψάχνουμε δυναμικά για αριθμούς δεξιά
-                c_min = c+1
-                while c_min < len(df.columns) and not df.iloc[r, c_min].replace('.','').isdigit():
-                    c_min += 1
-                c_max = c_min + 1
+                # Υποθέτουμε Min/Max είναι δεξιά
+                c_min = c + 1
+                c_max = c + 2
+                # Αν πέσουμε σε κενό, ψάχνουμε παραδίπλα
+                if not df.iloc[r, c_min].replace('.','').isdigit():
+                    c_min += 1; c_max += 1
                 
-                # Διαβάζουμε τη λίστα
-                curr = r
-                while curr < len(df):
-                    name = str(df.iloc[curr, c_name]).strip()
-                    if not name or name == "Attribute": # Τέλος λίστας
-                        if len(attrs_db) > 5: break # Αν έχουμε βρει ήδη, σταματάμε
-                        curr += 1; continue
-
-                    # Έλεγχος αν είναι Attribute
+                # Σαρώνουμε ΜΕΧΡΙ ΤΟ ΤΕΛΟΣ ΤΟΥ ΑΡΧΕΙΟΥ (Row 300+)
+                for i in range(r, len(df)):
+                    name = str(df.iloc[i, c_name]).strip()
+                    
+                    # Αγνοούμε κενά, headers, ή σκουπίδια
+                    if not name or name == "Attribute" or name == "nan": continue
+                    
+                    # Προσπαθούμε να διαβάσουμε αριθμούς
                     try:
-                        mn = int(float(df.iloc[curr, c_min]))
-                        mx = int(float(df.iloc[curr, c_max]))
-                        attrs_db.append({"name": name, "min": mn, "max": mx})
-                    except: pass
-                    curr += 1
-                found_attrs = True; break
-        if found_attrs: break
+                        mn_str = str(df.iloc[i, c_min])
+                        mx_str = str(df.iloc[i, c_max])
+                        
+                        if mn_str.replace('.','').isdigit() and mx_str.replace('.','').isdigit():
+                            mn = int(float(mn_str))
+                            mx = int(float(mx_str))
+                            
+                            # Φίλτρο: Να είναι λογικά νούμερα (π.χ. όχι ημερομηνίες)
+                            if 20 <= mn <= 99 and 20 <= mx <= 99:
+                                attributes.append({"name": name, "min": mn, "max": mx})
+                    except: continue
+                break # Σταματάμε την εξωτερική αναζήτηση αφού βρήκαμε τη στήλη
+        if c_name != -1: break
 
-    # --- C. ΕΞΟΡΥΞΗ PLAYSTYLES & REQUIREMENTS ---
-    # Ψάχνουμε τη λίστα αριστερά που έχει τα Playstyles
-    playstyles_db = []
-    keywords = ["Finesse", "Rapid", "Quick Step", "Dead Ball", "Tiki"]
+    return levels, attributes
+
+# --- 3. UI ---
+levels_data, attrs_data = load_data_final()
+
+if not attrs_data:
+    st.error("⚠️ Δεν βρέθηκαν Attributes. Το αρχείο πρέπει να έχει τη λέξη 'Acceleration'.")
+else:
+    # Sidebar
+    st.sidebar.header("🎚️ Player Settings")
     
-    for r in range(15, len(df)): # Συνήθως ξεκινάνε πιο κάτω
-        # Έλεγχος στήλης Α και Β
-        for c in [0, 1]:
-            val = str(df.iloc[r, c]).strip()
-            # Αν μοιάζει με Playstyle
-            if any(k in val for k in keywords) and "(" not in val:
-                # Ψάχνουμε για Requirement στην ίδια γραμμή (στα κελιά δεξιά)
-                req_val = 0
-                req_stat = ""
-                
-                # Σαρώνουμε τη γραμμή για αριθμούς > 60 (πιθανά requirements)
-                for scan_c in range(c+1, c+10): # Κοιτάμε 10 κελιά δεξιά
-                    cell_val = str(df.iloc[r, scan_c]).strip()
-                    if cell_val.replace('.','').isdigit():
-                        num = int(float(cell_val))
-                        if 60 <= num <= 99:
-                            req_val = num
-                            # Ίσως το όνομα του stat είναι δίπλα;
-                            break
-                
-                playstyles_db.append({"name": val, "req_val": req_val})
-
-    return levels_db, attrs_db, playstyles_db
-
-# -----------------------------------------------------------------------------
-# 3. INTERFACE & STATE MANAGEMENT
-# -----------------------------------------------------------------------------
-st.set_page_config(layout="wide", page_title="FC26 Pro Logic")
-
-# Φόρτωση
-levels, attributes, playstyles = load_complex_data()
-
-if not attributes:
-    st.error("❌ CRITICAL ERROR: Το αρχείο δεν διαβάστηκε σωστά. Ανέβασε το 'FC26 Pro Club Manual Builder - ManualBuilder.csv'.")
-    st.stop()
-
-# Sidebar - Player Level
-st.sidebar.header("🎚️ Player Level")
-max_lvl = max(levels.keys())
-sel_level = st.sidebar.number_input("Level", 1, max_lvl, max_lvl)
-TOTAL_BUDGET = levels.get(sel_level, 1000)
-
-# Sidebar - Playstyles (Με Logic Check)
-st.sidebar.divider()
-st.sidebar.subheader("🛡️ Playstyles")
-
-selected_playstyles_indices = []
-for i, ps in enumerate(playstyles):
-    label = ps['name']
-    if ps['req_val'] > 0:
-        label += f" (Req: {ps['req_val']})"
+    # LEVEL SELECTOR (Max 60)
+    # Χρησιμοποιούμε selectbox για να παίρνουμε ακριβώς τα AP από τον πίνακα
+    avail_levels = sorted(list(levels_data.keys()))
+    if not avail_levels: avail_levels = list(range(1, 61))
     
-    if st.sidebar.checkbox(label, key=f"ps_{i}"):
-        selected_playstyles_indices.append(i)
-
-# Main Screen
-st.title("⚽ FC26 Logic Builder")
-st.markdown(f"**Base Archetype Stats loaded from CSV.** (Limits: {attributes[0]['min']} - {attributes[0]['max']} for {attributes[0]['name']})")
-
-col_stats, col_info = st.columns([2, 1])
-
-# State για να κρατάμε τα τρέχοντα stats
-current_stats = {}
-total_spent = 0
-
-with col_stats:
-    st.subheader("📈 Attributes Distribution")
+    selected_lvl = st.sidebar.selectbox("Level", avail_levels, index=len(avail_levels)-1)
     
-    # Ομαδοποίηση για ομορφιά
-    cols = st.columns(3)
+    # AP Calculation
+    total_ap = levels_data.get(selected_lvl, 1569)
     
-    for i, attr in enumerate(attributes):
-        col = cols[i % 3]
-        with col:
-            # Slider
-            val = st.slider(
-                f"**{attr['name']}**",
-                min_value=attr['min'],
-                max_value=attr['max'],
-                value=attr['min'],
-                key=f"attr_{i}"
-            )
+    st.sidebar.divider()
+    st.sidebar.metric("Total AP Available", total_ap)
+    
+    # Main Stats
+    st.title(f"FC26 Builder (Level {selected_lvl})")
+    st.write(f"Loaded {len(attrs_data)} attributes from CSV.")
+    
+    col1, col2 = st.columns([2, 1])
+    
+    spent_ap = 0
+    
+    with col1:
+        # Εμφάνιση σε 2 στήλες μέσα στο panel
+        sub_c1, sub_c2 = st.columns(2)
+        
+        for idx, attr in enumerate(attrs_data):
+            # Μοιράζουμε τα stats αριστερά-δεξιά
+            target_col = sub_c1 if idx % 2 == 0 else sub_c2
             
-            # Υπολογισμός Κόστους με τη ΜΗΧΑΝΗ FC26
-            cost = FC26Engine.calculate_stat_cost(attr['min'], val)
-            total_spent += cost
-            current_stats[attr['name']] = val
-            
-            # Οπτική ένδειξη κόστους
-            if cost > 0:
-                st.caption(f"🔥 Cost: {cost} AP")
+            with target_col:
+                val = st.slider(
+                    f"{attr['name']}", 
+                    min_value=attr['min'], 
+                    max_value=attr['max'], 
+                    value=attr['min'],
+                    key=f"s_{idx}"
+                )
+                cost = calculate_cost(attr['min'], val)
+                spent_ap += cost
+                if cost > 0:
+                    st.caption(f"Cost: {cost}")
 
-# δεξιά στήλη - RESULTS
-with col_info:
-    remaining = TOTAL_BUDGET - total_spent
-    
-    # Dashboard Card
-    st.markdown(f"""
-    <div style="background-color: #1a1a1a; border: 2px solid #333; border-radius: 15px; padding: 20px; text-align: center;">
-        <h3 style="color: #aaa; margin:0;">AVAILABLE AP</h3>
-        <h1 style="font-size: 60px; margin:0; color: {'#4cd137' if remaining >= 0 else '#e84118'}">{remaining}</h1>
-        <p>Total: {TOTAL_BUDGET} | Spent: {total_spent}</p>
-    </div>
-    """, unsafe_allow_html=True)
-
-    st.write("---")
-    st.subheader("🔍 Requirements Check")
-    
-    # Έλεγχος Playstyles (ΑΥΤΟ ΠΟΥ ΗΘΕΛΕΣ)
-    if selected_playstyles_indices:
-        for idx in selected_playstyles_indices:
-            ps = playstyles[idx]
-            req_val = ps['req_val']
-            
-            # Πρέπει να βρούμε ΠΟΙΟ stat χρειάζεται. 
-            # Επειδή το CSV είναι χαοτικό, κάνουμε μια "μαντεψιά" ή ελέγχουμε γενικά
-            # Στο συγκεκριμένο αρχείο, συνήθως η απαίτηση είναι στο κύριο stat του Archetype.
-            # Εδώ θα κάνουμε έλεγχο με βάση τη λογική:
-            # Αν το Playstyle είναι "Finesse", ελέγχουμε Curve/Finishing.
-            
-            status_icon = "✅"
-            status_msg = "Active"
-            
-            # Logic Checker
-            if req_val > 0:
-                # Εδώ ψάχνουμε αν ΚΑΠΟΙΟ από τα stats του χρήστη πιάνει το νούμερο
-                # (Απλοποιημένη λογική γιατί δεν ξέρουμε ποιο stat θέλει ακριβώς από το CSV)
-                max_user_stat = max(current_stats.values())
-                if max_user_stat < req_val:
-                    status_icon = "❌"
-                    status_msg = f"Need stat {req_val}+"
-                else:
-                    # Πιο έξυπνος έλεγχος: Αν το όνομα του playstyle ταιριάζει με stat
-                    pass 
-            
-            st.markdown(f"**{ps['name']}**")
-            if status_icon == "✅":
-                st.success(f"{status_icon} {status_msg}")
-            else:
-                st.warning(f"{status_icon} {status_msg} (Check Attributes)")
-    else:
-        st.info("Select Playstyles from the sidebar to validate.")
+    with col2:
+        rem = total_ap - spent_ap
+        
+        st.markdown(f"""
+            <div style='text-align: center; padding: 20px; border: 2px solid #444; border-radius: 10px; background-color: #262730;'>
+                <h2 style='margin:0; color: #aaa;'>REMAINING AP</h2>
+                <h1 style='margin:0; font-size: 3em; color: {"#4CAF50" if rem >= 0 else "#FF5252"}'>{rem}</h1>
+            </div>
+        """, unsafe_allow_html=True)
+        
+        st.write("---")
+        st.progress(min(spent_ap / (total_ap + 0.1), 1.0))
+        st.write(f"**Spent:** {spent_ap} / {total_ap}")
