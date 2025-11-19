@@ -1,10 +1,9 @@
 import streamlit as st
 import pandas as pd
-import math
 
-st.set_page_config(layout="wide", page_title="FC26 Builder Final")
+st.set_page_config(layout="wide", page_title="FC26 Builder vFinal")
 
-# --- 1. LOGIC ENGINE (Κόστος AP) ---
+# --- LOGIC: Κόστος AP ---
 def calculate_cost(base, current):
     if current <= base: return 0
     cost = 0
@@ -14,154 +13,152 @@ def calculate_cost(base, current):
         else: cost += 3
     return cost
 
-# --- 2. DATA LOADER (ΣΑΡΩΣΗ ΜΕΧΡΙ ΤΕΛΟΣ) ---
-@st.cache_data
-def load_data_final():
+# --- DATA LOADER ---
+# ΣΗΜΑΝΤΙΚΟ: Βάζουμε ttl=0 για να μην κρατάει cache αν δεν θέλουμε, 
+# αλλά το κουμπί Reload είναι πιο σωστό.
+@st.cache_data(show_spinner=False)
+def load_data_clean():
     try:
-        # Διαβάζουμε όλο το αρχείο, ΟΧΙ μόνο τις πρώτες γραμμές
         df = pd.read_csv("FC26 Pro Club Manual Builder - ManualBuilder.csv", header=None, dtype=str).fillna("")
     except:
         return {}, []
 
-    # --- LEVELS ---
+    # 1. LEVELS SCAN
     levels = {}
-    # Ψάχνουμε τη στήλη Level & Total so far
     c_lvl = -1; c_ap = -1
     
-    # Σάρωση για headers
+    # Ψάχνουμε headers
     for r in range(len(df)):
         for c in range(len(df.columns)):
             val = str(df.iloc[r, c]).strip()
             if val == "Level": c_lvl = c
             if "Total so far" in val: c_ap = c
         if c_lvl != -1 and c_ap != -1:
-            # Βρήκαμε τους headers, διαβάζουμε από κάτω
-            start_r = r + 1
-            for i in range(start_r, len(df)):
+            # Διαβάζουμε από κάτω
+            for i in range(r+1, len(df)):
                 try:
                     l_str = str(df.iloc[i, c_lvl])
                     ap_str = str(df.iloc[i, c_ap])
                     if l_str.replace('.','').isdigit():
-                        l = int(float(l_str))
-                        ap = int(float(ap_str))
-                        levels[l] = ap
+                        levels[int(float(l_str))] = int(float(ap_str))
                 except: continue
             break
-    
-    # ΔΙΟΡΘΩΣΗ ΓΙΑ MAX LEVEL 60
-    # Αν το CSV σταματάει στο 50, συμπληρώνουμε εμείς
-    max_l_found = max(levels.keys()) if levels else 0
-    if max_l_found < 60:
-        last_ap = levels.get(max_l_found, 0)
-        for x in range(max_l_found + 1, 61):
-            last_ap += 25 # Υπόθεση: +25 AP ανά level μετά το 50 (Adjustable)
-            levels[x] = last_ap
-    
-    # Manual Override για το Level 60 που ζήτησες
-    levels[60] = 1569
-
-    # --- ATTRIBUTES (Η ΜΕΓΑΛΗ ΔΙΟΡΘΩΣΗ) ---
+            
+    # 2. ATTRIBUTES SCAN (Με Φίλτρο)
     attributes = []
+    seen_names = set() # Για να μην έχουμε διπλά
     c_name = -1
     
-    # Βρίσκουμε τη στήλη "Acceleration" (Άγκυρα)
+    # Βρίσκουμε την "Acceleration"
     for r in range(len(df)):
         for c in range(len(df.columns)):
             if str(df.iloc[r, c]).strip() == "Acceleration":
                 c_name = c
-                # Υποθέτουμε Min/Max είναι δεξιά
                 c_min = c + 1
                 c_max = c + 2
-                # Αν πέσουμε σε κενό, ψάχνουμε παραδίπλα
+                
+                # Διόρθωση αν έχει κενό κελί ανάμεσα
                 if not df.iloc[r, c_min].replace('.','').isdigit():
                     c_min += 1; c_max += 1
                 
-                # Σαρώνουμε ΜΕΧΡΙ ΤΟ ΤΕΛΟΣ ΤΟΥ ΑΡΧΕΙΟΥ (Row 300+)
+                # Σάρωση προς τα κάτω
                 for i in range(r, len(df)):
                     name = str(df.iloc[i, c_name]).strip()
                     
-                    # Αγνοούμε κενά, headers, ή σκουπίδια
+                    # --- ΦΙΛΤΡΑΡΙΣΜΑ (CLEANING) ---
+                    # 1. Αγνοούμε κενά ή headers
                     if not name or name == "Attribute" or name == "nan": continue
+                    # 2. Αγνοούμε αριθμούς (π.χ. '1', '2') που βρέθηκαν στο αρχείο
+                    if name.replace('.','').isdigit(): continue
+                    # 3. Αγνοούμε λέξεις κλειδιά που δεν είναι stats
+                    if name in ["Totals", "Average", "Score"]: continue
+                    # 4. Αγνοούμε διπλότυπα (αν το έχεις ξαναγράψει κάτω ως Re-print)
+                    if name in seen_names: continue
                     
-                    # Προσπαθούμε να διαβάσουμε αριθμούς
                     try:
-                        mn_str = str(df.iloc[i, c_min])
-                        mx_str = str(df.iloc[i, c_max])
+                        mn = int(float(df.iloc[i, c_min]))
+                        mx = int(float(df.iloc[i, c_max]))
                         
-                        if mn_str.replace('.','').isdigit() and mx_str.replace('.','').isdigit():
-                            mn = int(float(mn_str))
-                            mx = int(float(mx_str))
-                            
-                            # Φίλτρο: Να είναι λογικά νούμερα (π.χ. όχι ημερομηνίες)
-                            if 20 <= mn <= 99 and 20 <= mx <= 99:
-                                attributes.append({"name": name, "min": mn, "max": mx})
+                        # Κρατάμε μόνο λογικά νούμερα
+                        if 10 <= mn <= 99:
+                            attributes.append({"name": name, "min": mn, "max": mx})
+                            seen_names.add(name)
                     except: continue
-                break # Σταματάμε την εξωτερική αναζήτηση αφού βρήκαμε τη στήλη
+                break
         if c_name != -1: break
 
     return levels, attributes
 
-# --- 3. UI ---
-levels_data, attrs_data = load_data_final()
+# --- UI ---
+st.sidebar.title("⚙️ FC26 Config")
+
+# ΚΟΥΜΠΙ RELOAD (Απαντάει στο πρόβλημά σου)
+if st.sidebar.button("🔄 Reload Data (Clear Cache)"):
+    st.cache_data.clear()
+    st.rerun()
+
+levels_data, attrs_data = load_data_clean()
 
 if not attrs_data:
-    st.error("⚠️ Δεν βρέθηκαν Attributes. Το αρχείο πρέπει να έχει τη λέξη 'Acceleration'.")
+    st.error("⚠️ Το αρχείο δεν φορτώθηκε σωστά. Πάτα Reload.")
 else:
-    # Sidebar
-    st.sidebar.header("🎚️ Player Settings")
-    
-    # LEVEL SELECTOR (Max 60)
-    # Χρησιμοποιούμε selectbox για να παίρνουμε ακριβώς τα AP από τον πίνακα
+    # LEVEL
+    st.sidebar.header("Level Selection")
+    # Ταξινομούμε τα levels για να βγαίνουν σωστά (1...60)
     avail_levels = sorted(list(levels_data.keys()))
-    if not avail_levels: avail_levels = list(range(1, 61))
     
-    selected_lvl = st.sidebar.selectbox("Level", avail_levels, index=len(avail_levels)-1)
+    # Default στο Max Level (60)
+    default_idx = len(avail_levels) - 1
+    sel_lvl = st.sidebar.selectbox("Player Level", avail_levels, index=default_idx)
     
-    # AP Calculation
-    total_ap = levels_data.get(selected_lvl, 1569)
+    budget = levels_data.get(sel_lvl, 0)
+    st.sidebar.success(f"💰 **Total AP: {budget}**")
+
+    # MAIN APP
+    st.title(f"FC26 Pro Builder (Lvl {sel_lvl})")
+    st.caption(f"Loaded {len(attrs_data)} unique attributes.")
     
-    st.sidebar.divider()
-    st.sidebar.metric("Total AP Available", total_ap)
+    col1, col2 = st.columns([0.65, 0.35])
     
-    # Main Stats
-    st.title(f"FC26 Builder (Level {selected_lvl})")
-    st.write(f"Loaded {len(attrs_data)} attributes from CSV.")
-    
-    col1, col2 = st.columns([2, 1])
-    
-    spent_ap = 0
+    total_spent = 0
     
     with col1:
-        # Εμφάνιση σε 2 στήλες μέσα στο panel
-        sub_c1, sub_c2 = st.columns(2)
+        st.subheader("Attributes")
+        # Δημιουργία 2 στηλών για τα sliders (για να χωράνε πολλά)
+        c_a, c_b = st.columns(2)
         
-        for idx, attr in enumerate(attrs_data):
-            # Μοιράζουμε τα stats αριστερά-δεξιά
-            target_col = sub_c1 if idx % 2 == 0 else sub_c2
+        for i, attr in enumerate(attrs_data):
+            # Μοίρασμα αριστερά-δεξιά
+            target_col = c_a if i % 2 == 0 else c_b
             
             with target_col:
                 val = st.slider(
-                    f"{attr['name']}", 
-                    min_value=attr['min'], 
-                    max_value=attr['max'], 
-                    value=attr['min'],
-                    key=f"s_{idx}"
+                    attr['name'], 
+                    attr['min'], 
+                    attr['max'], 
+                    attr['min'],
+                    key=f"sl_{i}"
                 )
                 cost = calculate_cost(attr['min'], val)
-                spent_ap += cost
+                total_spent += cost
                 if cost > 0:
                     st.caption(f"Cost: {cost}")
 
     with col2:
-        rem = total_ap - spent_ap
+        # Sticky Dashboard (Πίνακας αποτελεσμάτων)
+        remaining = budget - total_spent
         
         st.markdown(f"""
-            <div style='text-align: center; padding: 20px; border: 2px solid #444; border-radius: 10px; background-color: #262730;'>
-                <h2 style='margin:0; color: #aaa;'>REMAINING AP</h2>
-                <h1 style='margin:0; font-size: 3em; color: {"#4CAF50" if rem >= 0 else "#FF5252"}'>{rem}</h1>
+            <div style="position: fixed; width: 300px; padding: 20px; 
+                 background-color: #1E1E1E; border: 1px solid #444; 
+                 border-radius: 10px; z-index: 999;">
+                <h2 style="margin-top:0; color: #CCC;">Budget Status</h2>
+                <h1 style="font-size: 48px; margin:0; color: {'#4CAF50' if remaining >= 0 else '#FF5252'}">
+                    {remaining}
+                </h1>
+                <p>Remaining Points</p>
+                <hr style="border-color: #444;">
+                <p>Total Available: <b>{budget}</b></p>
+                <p>Points Spent: <b>{total_spent}</b></p>
             </div>
         """, unsafe_allow_html=True)
-        
-        st.write("---")
-        st.progress(min(spent_ap / (total_ap + 0.1), 1.0))
-        st.write(f"**Spent:** {spent_ap} / {total_ap}")
