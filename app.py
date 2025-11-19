@@ -1,9 +1,10 @@
 import streamlit as st
 import pandas as pd
+import plotly.graph_objects as go
 
-st.set_page_config(layout="wide", page_title="FC26 Builder vFinal")
+st.set_page_config(layout="wide", page_title="FC26 Builder Pro")
 
-# --- LOGIC: Κόστος AP ---
+# --- 1. LOGIC ---
 def calculate_cost(base, current):
     if current <= base: return 0
     cost = 0
@@ -13,138 +14,194 @@ def calculate_cost(base, current):
         else: cost += 3
     return cost
 
-# --- DATA LOADER ---
+# Κατηγοριοποίηση για το Radar Chart
+CATEGORIES = {
+    "Pace": ["Acceleration", "SprintSpeed"],
+    "Shooting": ["Finishing", "ShotPower", "LongShots", "Volleys", "Penalties", "AttackPositioning"],
+    "Passing": ["Vision", "Crossing", "FKAccuracy", "ShortPassing", "LongPassing", "Curve"],
+    "Dribbling": ["Agility", "Balance", "Reactions", "BallControl", "Dribbling", "Composure"],
+    "Defending": ["Interceptions", "Heading Accuracy", "DefAwareness", "StandingTackle", "SlidingTackle"],
+    "Physical": ["Jumping", "Stamina", "Strength", "Aggression"]
+}
+
+# --- 2. DATA LOADER ---
 @st.cache_data(show_spinner=False)
-def load_data_clean():
+def load_data_v2():
     try:
         df = pd.read_csv("FC26 Pro Club Manual Builder - ManualBuilder.csv", header=None, dtype=str).fillna("")
     except:
         return {}, []
 
-    # 1. LEVELS SCAN
+    # Levels
     levels = {}
     c_lvl = -1; c_ap = -1
-    
-    # Ψάχνουμε headers
     for r in range(len(df)):
         for c in range(len(df.columns)):
             val = str(df.iloc[r, c]).strip()
             if val == "Level": c_lvl = c
             if "Total so far" in val: c_ap = c
-        if c_lvl != -1 and c_ap != -1:
-            # Διαβάζουμε από κάτω
+        if c_lvl != -1:
             for i in range(r+1, len(df)):
                 try:
-                    l_str = str(df.iloc[i, c_lvl])
-                    ap_str = str(df.iloc[i, c_ap])
-                    if l_str.replace('.','').isdigit():
-                        levels[int(float(l_str))] = int(float(ap_str))
+                    l = int(float(df.iloc[i, c_lvl]))
+                    ap = int(float(df.iloc[i, c_ap]))
+                    levels[l] = ap
                 except: continue
             break
             
-    # 2. ATTRIBUTES SCAN (Με Φίλτρο)
+    # Attributes
     attributes = []
-    seen_names = set() 
+    seen = set()
     c_name = -1
     
-    # Βρίσκουμε την "Acceleration"
     for r in range(len(df)):
         for c in range(len(df.columns)):
             if str(df.iloc[r, c]).strip() == "Acceleration":
                 c_name = c
-                c_min = c + 1
-                c_max = c + 2
-                
-                if not df.iloc[r, c_min].replace('.','').isdigit():
-                    c_min += 1; c_max += 1
+                c_min = c+1; c_max = c+2
+                if not df.iloc[r, c_min].replace('.','').isdigit(): c_min+=1; c_max+=1
                 
                 for i in range(r, len(df)):
                     name = str(df.iloc[i, c_name]).strip()
-                    
-                    if not name or name == "Attribute" or name == "nan": continue
-                    if name.replace('.','').isdigit(): continue
-                    if name in ["Totals", "Average", "Score"]: continue
-                    if name in seen_names: continue
-                    
+                    if not name or name in ["Attribute", "nan", "Totals"] or name.replace('.','').isdigit(): continue
+                    if name in seen: continue
                     try:
                         mn = int(float(df.iloc[i, c_min]))
                         mx = int(float(df.iloc[i, c_max]))
-                        
                         if 10 <= mn <= 99:
-                            attributes.append({"name": name, "min": mn, "max": mx})
-                            seen_names.add(name)
+                            attributes.append({"name": name, "min": mn, "max": mx, "cat": "Other"})
+                            seen.add(name)
                     except: continue
                 break
         if c_name != -1: break
+    
+    # Assign Categories
+    for attr in attributes:
+        for cat, keywords in CATEGORIES.items():
+            if attr['name'] in keywords:
+                attr['cat'] = cat
+                break
 
     return levels, attributes
 
-# --- UI ---
-st.sidebar.title("⚙️ FC26 Config")
+# --- 3. UI ---
+levels_data, attrs_data = load_data_v2()
 
-if st.sidebar.button("🔄 Reload Data"):
+# Sidebar
+st.sidebar.title("⚙️ Player Config")
+if st.sidebar.button("🔄 Reset / Reload"):
     st.cache_data.clear()
     st.rerun()
 
-levels_data, attrs_data = load_data_clean()
-
-if not attrs_data:
-    st.error("⚠️ Το αρχείο δεν φορτώθηκε σωστά. Πάτα Reload.")
-else:
-    # LEVEL
-    st.sidebar.header("Level Selection")
-    avail_levels = sorted(list(levels_data.keys()))
-    
-    if not avail_levels: avail_levels = [60] # Fallback
-
-    default_idx = len(avail_levels) - 1
-    sel_lvl = st.sidebar.selectbox("Player Level", avail_levels, index=default_idx)
-    
+if attrs_data:
+    # Level Selector
+    lvls = sorted(list(levels_data.keys()))
+    if not lvls: lvls = [60]
+    sel_lvl = st.sidebar.selectbox("Level", lvls, index=len(lvls)-1)
     budget = levels_data.get(sel_lvl, 1569)
-    st.sidebar.success(f"💰 **Total AP: {budget}**")
 
-    # MAIN APP
-    st.title(f"FC26 Pro Builder (Lvl {sel_lvl})")
+    # Main Layout
+    st.title("FC26 Pro Builder")
     
-    col1, col2 = st.columns([0.65, 0.35])
+    col_controls, col_visuals = st.columns([0.55, 0.45])
     
+    user_vals = {}
     total_spent = 0
-    
-    with col1:
-        st.subheader("Attributes")
-        c_a, c_b = st.columns(2)
-        
-        for i, attr in enumerate(attrs_data):
-            target_col = c_a if i % 2 == 0 else c_b
-            
-            with target_col:
-                val = st.slider(
-                    attr['name'], 
-                    attr['min'], 
-                    attr['max'], 
-                    attr['min'],
-                    key=f"sl_{i}"
-                )
-                cost = calculate_cost(attr['min'], val)
-                total_spent += cost
-                if cost > 0:
-                    st.caption(f"Cost: {cost}")
 
-    with col2:
+    with col_controls:
+        st.subheader("🛠️ Build Attributes")
+        # Tabs για να μοιάζει με Proxi
+        tabs = st.tabs(["PAC/SHO", "PAS/DRI", "DEF/PHY"])
+        
+        # Group attributes
+        grouped = {c: [] for c in CATEGORIES}
+        for a in attrs_data:
+            if a['cat'] in grouped: grouped[a['cat']].append(a)
+            else: grouped.setdefault("Other", []).append(a)
+
+        # Tab 1
+        with tabs[0]:
+            st.markdown("### Pace & Shooting")
+            for cat in ["Pace", "Shooting"]:
+                st.caption(f"--- {cat} ---")
+                for attr in grouped.get(cat, []):
+                    v = st.slider(attr['name'], attr['min'], attr['max'], attr['min'], key=attr['name'])
+                    c = calculate_cost(attr['min'], v)
+                    total_spent += c
+                    user_vals[attr['name']] = v
+
+        # Tab 2
+        with tabs[1]:
+            st.markdown("### Passing & Dribbling")
+            for cat in ["Passing", "Dribbling"]:
+                st.caption(f"--- {cat} ---")
+                for attr in grouped.get(cat, []):
+                    v = st.slider(attr['name'], attr['min'], attr['max'], attr['min'], key=attr['name'])
+                    c = calculate_cost(attr['min'], v)
+                    total_spent += c
+                    user_vals[attr['name']] = v
+
+        # Tab 3
+        with tabs[2]:
+            st.markdown("### Defense & Physical")
+            for cat in ["Defending", "Physical"]:
+                st.caption(f"--- {cat} ---")
+                for attr in grouped.get(cat, []):
+                    v = st.slider(attr['name'], attr['min'], attr['max'], attr['min'], key=attr['name'])
+                    c = calculate_cost(attr['min'], v)
+                    total_spent += c
+                    user_vals[attr['name']] = v
+
+    with col_visuals:
+        # Sticky Panel
         remaining = budget - total_spent
         
-        # HTML ΜΕΣΑ ΣΕ PYTHON STRING - ΑΥΤΟ ΕΙΝΑΙ ΤΟ ΣΩΣΤΟ
+        # 1. Budget Card
         st.markdown(f"""
-            <div style="position: fixed; width: 300px; padding: 20px; 
-                 background-color: #1E1E1E; border: 1px solid #444; 
-                 border-radius: 10px; z-index: 999;">
-                <h2 style="margin-top:0; color: #CCC;">Budget Status</h2>
-                <h1 style="font-size: 48px; margin:0; color: {'#4CAF50' if remaining >= 0 else '#FF5252'}">
-                    {remaining}
-                </h1>
-                <p>Remaining Points</p>
-                <hr style="border-color: #444;">
-                <p>Total Available: <b>{budget}</b></p>
-                <p>Points Spent: <b>{total_spent}</b></p>
-            </div>
+        <div style="background: #111; border:1px solid #333; padding:15px; border-radius:10px; text-align:center; margin-bottom: 20px;">
+            <h2 style="color:{'#4CAF50' if remaining>=0 else '#F44336'}; margin:0;">{remaining} AP</h2>
+            <span style="color:#888">Remaining Budget</span>
+        </div>
         """, unsafe_allow_html=True)
+
+        # 2. RADAR CHART (Η "Μαγεία")
+        # Υπολογισμός μέσων όρων ανά κατηγορία
+        radar_vals = []
+        radar_cats = []
+        
+        for cat, items in CATEGORIES.items():
+            vals = [user_vals.get(x, 0) for x in items if x in user_vals]
+            if vals:
+                avg = sum(vals) / len(vals)
+                radar_vals.append(avg)
+                radar_cats.append(cat)
+        
+        # Κλείσιμο του κύκλου
+        if radar_vals:
+            radar_vals.append(radar_vals[0])
+            radar_cats.append(radar_cats[0])
+
+            fig = go.Figure()
+            fig.add_trace(go.Scatterpolar(
+                r=radar_vals,
+                theta=radar_cats,
+                fill='toself',
+                name='My Build',
+                line_color='#00ffcc'
+            ))
+            fig.update_layout(
+                polar=dict(radialaxis=dict(visible=True, range=[40, 100])),
+                showlegend=False,
+                margin=dict(l=20, r=20, t=20, b=20),
+                paper_bgcolor="rgba(0,0,0,0)",
+                plot_bgcolor="rgba(0,0,0,0)",
+                font=dict(color="white")
+            )
+            st.plotly_chart(fig, use_container_width=True)
+        
+        # 3. Playstyles (Placeholder για το μέλλον)
+        with st.expander("Active Playstyles"):
+            st.info("Select your attributes to unlock styles (Logic coming soon)")
+
+else:
+    st.error("CSV not found. Upload & Reload.")
