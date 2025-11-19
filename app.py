@@ -1,178 +1,175 @@
 import streamlit as st
 import pandas as pd
 
-st.set_page_config(layout="wide", page_title="FC26 Pro Builder Ultimate")
+st.set_page_config(layout="wide", page_title="FC26 Builder Ultimate")
 
-# --- 1. ΤΑ ΔΕΔΟΜΕΝΑ ΤΟΥ FC26 (Hardcoded για σιγουριά) ---
-# Επειδή το CSV δεν μας δίνει τη λογική, την ορίζουμε εδώ.
-# ΑΥΤΟ ΕΙΝΑΙ ΠΟΥ ΕΛΕΙΠΕ:
-FC_LOGIC = {
-    "ARCHETYPES": {
-        "Magician": {"focus": "Dribbling/Passing", "bonus": {"Agility": 85, "Vision": 84, "Dribbling": 86}},
-        "Marauder": {"focus": "Pace/Physical", "bonus": {"Sprint Speed": 82, "Acceleration": 84, "Strength": 75}},
-        "Finisher": {"focus": "Shooting", "bonus": {"Finishing": 88, "Shot Power": 85, "Volleys": 80}},
-        "Creator":  {"focus": "Passing", "bonus": {"Vision": 86, "Long Passing": 84, "Short Passing": 88}},
-        "Spark":    {"focus": "Agility", "bonus": {"Agility": 88, "Balance": 86, "Acceleration": 85}},
-        "Boss":     {"focus": "Defense", "bonus": {"Interceptions": 85, "Stand Tackle": 86, "Strength": 88}},
-        "Engine":   {"focus": "Work Rate", "bonus": {"Stamina": 90, "Reactions": 85, "Interceptions": 80}}
-    },
-    "LEVELS_AP": { 
-        # Τυπικός πίνακας Level -> AP (Αν το CSV αποτύχει)
-        10: 224, 25: 435, 50: 834, 75: 1050, 100: 1269
-    },
-    "PLAYSTYLES": [
-        "Finesse Shot", "Power Header", "Dead Ball", "Chip Shot", 
-        "Rapid", "Quick Step", "Relentless", "Trivela", "Technical"
-    ]
-}
+# --- ΚΑΝΟΝΕΣ ΚΟΣΤΟΥΣ FC (Αφού δεν υπάρχουν στο CSV ως τύποι) ---
+def get_stat_cost(base_val, target_val):
+    """Υπολογίζει το κόστος AP για να πας από το base στο target."""
+    cost = 0
+    for val in range(base_val, target_val):
+        # Τυπικό κόστος FC:
+        # 0-79: 1 AP
+        # 80-89: 2 AP
+        # 90-99: 3 AP (ή παραπάνω ανάλογα το Archetype)
+        if val < 80:
+            cost += 1
+        elif val < 90:
+            cost += 2
+        else:
+            cost += 3 # Ακριβά stats στο τέλος
+    return cost
 
 @st.cache_data
-def load_basic_stats():
-    # Φορτώνουμε ΜΟΝΟ τα ονόματα των Attributes από το CSV για να είναι σωστή η σειρά
+def load_full_data():
     try:
-        df = pd.read_csv("FC26 Pro Club Manual Builder - ManualBuilder.csv", header=None)
-        attributes = []
-        start_row = -1
-        # Ψάχνουμε το Attribute table
-        for i, row in df.iterrows():
-            if "Attribute" in row.values and "Min" in row.values:
-                start_row = i + 1; break
-        
-        if start_row != -1:
-            # Βρίσκουμε τη στήλη με τα ονόματα
-            header = df.iloc[start_row-1]
-            c_name = -1; c_min = -1
-            for idx, val in enumerate(header):
-                if str(val).strip() == "Attribute": c_name = idx
-                if str(val).strip() == "Min": c_min = idx
-
-            for i in range(start_row, len(df)):
-                val = str(df.iloc[i, c_name]).strip()
-                min_v = df.iloc[i, c_min]
-                if val and val != "nan" and val != "Attribute" and len(val) > 2:
-                    # Καθαρισμός τιμής Min
-                    try: base_min = int(float(min_v))
-                    except: base_min = 60
-                    attributes.append({"name": val, "base_min": base_min})
-        return attributes
+        df = pd.read_csv("FC26 Pro Club Manual Builder - ManualBuilder.csv", header=None, low_memory=False)
     except:
-        # Fallback αν δεν βρεθεί τίποτα
-        return [{"name": "Acceleration", "base_min": 60}, {"name": "Sprint Speed", "base_min": 60}, 
-                {"name": "Finishing", "base_min": 60}, {"name": "Shot Power", "base_min": 60},
-                {"name": "Agility", "base_min": 60}, {"name": "Balance", "base_min": 60}]
+        return {}, [], []
 
-attributes_list = load_basic_stats()
+    # 1. LEVELS & AP
+    levels_map = {}
+    start_row_lvl = -1
+    for i, row in df.iterrows():
+        if "Total so far" in row.astype(str).values:
+            start_row_lvl = i + 1; break
+            
+    if start_row_lvl != -1:
+        # Ψάχνουμε στήλες Level / Total so far
+        headers = df.iloc[start_row_lvl-1]
+        c_lvl = -1; c_ap = -1
+        for idx, val in enumerate(headers):
+            if str(val).strip() == "Level": c_lvl = idx
+            if "Total so far" in str(val): c_ap = idx
+            
+        if c_lvl != -1 and c_ap != -1:
+            for i in range(start_row_lvl, len(df)):
+                try:
+                    l = df.iloc[i, c_lvl]; ap = df.iloc[i, c_ap]
+                    if pd.notna(l) and pd.notna(ap):
+                        levels_map[int(float(l))] = int(float(ap))
+                except: continue
 
-# --- 2. UI SETUP ---
-st.sidebar.title("⚽ FC26 Pro Setup")
+    # 2. ATTRIBUTES (Min/Max)
+    attributes_data = []
+    start_row_attr = -1
+    for i, row in df.iterrows():
+        if "Attribute" in row.astype(str).values and "Min" in row.astype(str).values:
+            start_row_attr = i + 1; break
+            
+    if start_row_attr != -1:
+        headers = df.iloc[start_row_attr-1]
+        c_name = -1; c_min = -1; c_max = -1
+        for idx, val in enumerate(headers):
+            v = str(val).strip()
+            if v == "Attribute": c_name = idx
+            elif v == "Min": c_min = idx
+            elif v == "Max": c_max = idx
+            
+        if c_name != -1:
+            for i in range(start_row_attr, len(df)):
+                try:
+                    name = str(df.iloc[i, c_name]).strip()
+                    if name and name != "nan" and name != "Attribute" and len(name) > 2:
+                        mn = int(float(df.iloc[i, c_min]))
+                        mx = int(float(df.iloc[i, c_max]))
+                        attributes_data.append({"name": name, "min": mn, "max": mx})
+                except: continue
 
-# A. ΕΠΙΛΟΓΗ ARCHETYPE (Πλέον λειτουργεί!)
-selected_arch_name = st.sidebar.selectbox("Επίλεξε Archetype", list(FC_LOGIC["ARCHETYPES"].keys()))
-arch_data = FC_LOGIC["ARCHETYPES"][selected_arch_name]
-
-st.sidebar.info(f"**Focus:** {arch_data['focus']}")
-
-# B. LEVEL & AP
-user_level = st.sidebar.slider("Level Παίκτη", 1, 100, 100)
-# Υπολογισμός AP (Απλοποιημένος ή από CSV)
-total_ap = 100 + (user_level * 11) # Fallback logic
-st.sidebar.markdown(f"# 💰 AP: {total_ap}")
-
-# --- 3. MAIN SCREEN ---
-st.title(f"Build: {selected_arch_name} (Lvl {user_level})")
-
-col1, col2, col3 = st.columns([1, 1, 0.8])
-
-user_costs = 0
-user_selections = {}
-
-# --- ΚΑΤΗΓΟΡΙΕΣ STATS (ΓΙΑ ΝΑ ΜΗΝ ΕΙΝΑΙ ΧΥΜΑ) ---
-# Ομαδοποιούμε τα stats για να μοιάζει με το παιχνίδι
-categories = {
-    "Pace": ["Acceleration", "Sprint Speed", "SprintSpeed"],
-    "Shooting": ["Finishing", "Shot Power", "Long Shots", "Volleys", "Penalties"],
-    "Passing": ["Vision", "Crossing", "Long Passing", "Short Passing", "Curve"],
-    "Dribbling": ["Agility", "Balance", "Reactions", "Ball Control", "Dribbling"],
-    "Defending": ["Interceptions", "Heading Accuracy", "Def Awareness", "Stand Tackle", "Slide Tackle"],
-    "Physical": ["Jumping", "Stamina", "Strength", "Aggression"]
-}
-
-def get_category(stat_name):
-    for cat, items in categories.items():
-        # Αντιστοίχιση με fuzzy matching επειδή το CSV μπορεί να έχει "SprintSpeed" κολλητά
-        if any(x in stat_name for x in items): return cat
-    return "Other"
-
-# --- VISUALIZATION ΤΩΝ SLIDERS ---
-# Τα χωρίζουμε στις 3 στήλες
-cols_iter = [col1, col2]
-current_col_idx = 0
-
-# Ταξινομούμε τα attributes ανά κατηγορία
-sorted_attrs = sorted(attributes_list, key=lambda x: get_category(x['name']))
-prev_cat = ""
-
-with col1:
-    st.subheader("Attributes")
-
-for attr in sorted_attrs:
-    cat = get_category(attr['name'])
+    # 3. PLAYSTYLES (ΝΕΟ)
+    # Σαρώνουμε την 1η και 2η στήλη για λέξεις κλειδιά που μοιάζουν με Playstyles
+    # (Εξαιρούμε τα Archetypes που έχουν παρένθεση)
+    playstyles_found = []
+    known_playstyles = ["Finesse", "Power", "Dead Ball", "Chip Shot", "Rapid", "Quick Step", "Relentless", "Trivela", "Technical", "Tiki Taka", "Pinged Pass", "Incisive Pass", "Long Ball", "Whipped Pass", "Bruiser", "Intercept", "Block", "Anticipate", "Acrobatic", "Aerial"]
     
-    # Αλλαγή στήλης αν αλλάξει η κατηγορία (για ομορφιά)
-    if cat != prev_cat:
-        st.markdown(f"### {cat}")
-        prev_cat = cat
-    
-    # Archetype Logic: Αν το Archetype δίνει μπονους, ανέβασε το Min
-    bonus_min = arch_data["bonus"].get(attr['name'], 0)
-    final_min = max(attr['base_min'], bonus_min)
-    
-    # Slider
-    val = st.slider(
-        f"{attr['name']}", 
-        min_value=final_min, 
-        max_value=99, 
-        value=final_min,
-        key=attr['name']
-    )
-    
-    # Υπολογισμός Κόστους
-    # Τύπος: (Current - Min) * Cost Factor
-    cost_factor = 1
-    if val > 85: cost_factor = 2
-    if val > 92: cost_factor = 3
-    
-    cost = (val - final_min) * cost_factor
-    user_costs += cost
-    user_selections[attr['name']] = val
+    for i in range(len(df)):
+        for col in [0, 1]: # Ψάχνουμε στις πρώτες 2 στήλες
+            val = str(df.iloc[i, col]).strip()
+            # Αν περιέχει γνωστό όνομα Playstyle
+            if any(ps in val for ps in known_playstyles) and "(" not in val and "Select" not in val:
+                if val not in playstyles_found:
+                    playstyles_found.append(val)
 
-# --- 4. ΔΕΞΙΑ ΣΤΗΛΗ (PLAYSTYLES & RESULTS) ---
-with col3:
-    st.markdown("### 🛡️ Playstyles & Summary")
+    return levels_map, attributes_data, playstyles_found
+
+# --- UI ---
+levels, attrs, playstyles = load_full_data()
+
+if not levels:
+    st.error("⚠️ Φόρτωσε το αρχείο CSV!")
+else:
+    st.sidebar.title("⚽ FC26 Pro Builder")
     
-    # AP CARD
-    remaining = total_ap - user_costs
-    color = "#2ecc71" if remaining >= 0 else "#e74c3c"
+    # Level Setup
+    max_l = max(levels.keys())
+    sel_level = st.sidebar.number_input("Level", 1, max_l, max_l)
+    total_budget = levels.get(sel_level, 0)
     
-    st.markdown(f"""
-    <div style="background-color:{color}; padding:15px; border-radius:10px; text-align:center; color:white;">
-        <h2>{remaining} AP Left</h2>
-        <p>Used: {user_costs} / {total_ap}</p>
-    </div>
-    """, unsafe_allow_html=True)
+    st.sidebar.markdown(f"### Budget: {total_budget} AP")
+    st.sidebar.progress(0) # Placeholder
     
-    st.divider()
+    # Playstyles Section (ΑΡΙΣΤΕΡΑ)
+    st.sidebar.divider()
+    st.sidebar.subheader("🛡️ Playstyles")
+    selected_playstyles = []
+    if playstyles:
+        for ps in playstyles:
+            if st.sidebar.checkbox(ps, key=ps):
+                selected_playstyles.append(ps)
+    else:
+        st.sidebar.info("Δεν βρέθηκαν Playstyles στο CSV.")
+
+    # Main Area
+    st.title(f"Build Stats (Level {sel_level})")
     
-    st.write("**Select Playstyles:**")
-    for ps in FC_LOGIC["PLAYSTYLES"]:
-        has_ps = st.checkbox(ps)
-        if has_ps:
-            # Dummy check - Εδώ θα μπει η λογική
-            st.caption(f"Checking requirements for {ps}...")
-            # Π.χ. Αν Finesse Shot -> Check Curve > 80
-            if ps == "Finesse Shot" and user_selections.get("Curve", 0) < 80:
-                st.error("⚠️ Need 80 Curve!")
-            elif ps == "Rapid" and user_selections.get("Sprint Speed", 0) < 75:
-                st.error("⚠️ Need 75 Sprint Speed!")
-            else:
-                st.success("✅ Active")
+    col1, col2 = st.columns([2, 1])
+    
+    total_cost = 0
+    
+    with col1:
+        st.subheader("Attributes & Cost")
+        
+        for attr in attrs:
+            min_v = attr['min']
+            max_v = attr['max']
+            
+            # Slider
+            val = st.slider(
+                f"{attr['name']}", 
+                min_value=min_v, 
+                max_value=max_v, 
+                value=min_v
+            )
+            
+            # Κόστος
+            cost = get_stat_cost(min_v, val)
+            total_cost += cost
+            
+            # Εμφάνιση κόστους δίπλα
+            if cost > 0:
+                st.caption(f"⬆️ Cost: {cost} AP (Gained +{val - min_v})")
+
+    with col2:
+        st.markdown("### 📊 Summary")
+        
+        remaining = total_budget - total_cost
+        
+        # Card Design
+        st.markdown(f"""
+        <div style="border: 1px solid #444; padding: 20px; border-radius: 10px; text-align: center;">
+            <h2 style="color: {'#4CAF50' if remaining >= 0 else '#F44336'}">{remaining}</h2>
+            <p>Remaining AP</p>
+        </div>
+        """, unsafe_allow_html=True)
+        
+        st.write("---")
+        st.write(f"**Total Budget:** {total_budget}")
+        st.write(f"**Spent:** {total_cost}")
+        
+        if selected_playstyles:
+            st.write("---")
+            st.write("**Active Playstyles:**")
+            for ps in selected_playstyles:
+                st.markdown(f"- 🛡️ {ps}")
+                # Εδώ θα μπορούσαμε να βάλουμε warnings αν δεν πιάνεις τα stats
+                # π.χ. if ps == "Rapid" and user_speed < 75: ...
