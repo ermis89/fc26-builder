@@ -14,8 +14,6 @@ def calculate_cost(base, current):
     return cost
 
 # --- DATA LOADER ---
-# ΣΗΜΑΝΤΙΚΟ: Βάζουμε ttl=0 για να μην κρατάει cache αν δεν θέλουμε, 
-# αλλά το κουμπί Reload είναι πιο σωστό.
 @st.cache_data(show_spinner=False)
 def load_data_clean():
     try:
@@ -46,7 +44,7 @@ def load_data_clean():
             
     # 2. ATTRIBUTES SCAN (Με Φίλτρο)
     attributes = []
-    seen_names = set() # Για να μην έχουμε διπλά
+    seen_names = set() 
     c_name = -1
     
     # Βρίσκουμε την "Acceleration"
@@ -57,29 +55,21 @@ def load_data_clean():
                 c_min = c + 1
                 c_max = c + 2
                 
-                # Διόρθωση αν έχει κενό κελί ανάμεσα
                 if not df.iloc[r, c_min].replace('.','').isdigit():
                     c_min += 1; c_max += 1
                 
-                # Σάρωση προς τα κάτω
                 for i in range(r, len(df)):
                     name = str(df.iloc[i, c_name]).strip()
                     
-                    # --- ΦΙΛΤΡΑΡΙΣΜΑ (CLEANING) ---
-                    # 1. Αγνοούμε κενά ή headers
                     if not name or name == "Attribute" or name == "nan": continue
-                    # 2. Αγνοούμε αριθμούς (π.χ. '1', '2') που βρέθηκαν στο αρχείο
                     if name.replace('.','').isdigit(): continue
-                    # 3. Αγνοούμε λέξεις κλειδιά που δεν είναι stats
                     if name in ["Totals", "Average", "Score"]: continue
-                    # 4. Αγνοούμε διπλότυπα (αν το έχεις ξαναγράψει κάτω ως Re-print)
                     if name in seen_names: continue
                     
                     try:
                         mn = int(float(df.iloc[i, c_min]))
                         mx = int(float(df.iloc[i, c_max]))
                         
-                        # Κρατάμε μόνο λογικά νούμερα
                         if 10 <= mn <= 99:
                             attributes.append({"name": name, "min": mn, "max": mx})
                             seen_names.add(name)
@@ -92,8 +82,7 @@ def load_data_clean():
 # --- UI ---
 st.sidebar.title("⚙️ FC26 Config")
 
-# ΚΟΥΜΠΙ RELOAD (Απαντάει στο πρόβλημά σου)
-if st.sidebar.button("🔄 Reload Data (Clear Cache)"):
+if st.sidebar.button("🔄 Reload Data"):
     st.cache_data.clear()
     st.rerun()
 
@@ -104,19 +93,18 @@ if not attrs_data:
 else:
     # LEVEL
     st.sidebar.header("Level Selection")
-    # Ταξινομούμε τα levels για να βγαίνουν σωστά (1...60)
     avail_levels = sorted(list(levels_data.keys()))
     
-    # Default στο Max Level (60)
+    if not avail_levels: avail_levels = [60] # Fallback
+
     default_idx = len(avail_levels) - 1
     sel_lvl = st.sidebar.selectbox("Player Level", avail_levels, index=default_idx)
     
-    budget = levels_data.get(sel_lvl, 0)
+    budget = levels_data.get(sel_lvl, 1569)
     st.sidebar.success(f"💰 **Total AP: {budget}**")
 
     # MAIN APP
     st.title(f"FC26 Pro Builder (Lvl {sel_lvl})")
-    st.caption(f"Loaded {len(attrs_data)} unique attributes.")
     
     col1, col2 = st.columns([0.65, 0.35])
     
@@ -124,11 +112,9 @@ else:
     
     with col1:
         st.subheader("Attributes")
-        # Δημιουργία 2 στηλών για τα sliders (για να χωράνε πολλά)
         c_a, c_b = st.columns(2)
         
         for i, attr in enumerate(attrs_data):
-            # Μοίρασμα αριστερά-δεξιά
             target_col = c_a if i % 2 == 0 else c_b
             
             with target_col:
@@ -145,9 +131,9 @@ else:
                     st.caption(f"Cost: {cost}")
 
     with col2:
-        # Sticky Dashboard (Πίνακας αποτελεσμάτων)
         remaining = budget - total_spent
         
+        # HTML ΜΕΣΑ ΣΕ PYTHON STRING - ΑΥΤΟ ΕΙΝΑΙ ΤΟ ΣΩΣΤΟ
         st.markdown(f"""
             <div style="position: fixed; width: 300px; padding: 20px; 
                  background-color: #1E1E1E; border: 1px solid #444; 
